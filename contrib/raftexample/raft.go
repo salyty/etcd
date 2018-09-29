@@ -50,9 +50,9 @@ type raftNode struct {
 	waldir      string   // path to WAL directory
 	snapdir     string   // path to snapshot directory
 	getSnapshot func() ([]byte, error)
-	lastIndex   uint64 // index of log at start
+	lastIndex   uint64 // index of log at start， 恢复出来的最大 Index
 
-	confState     raftpb.ConfState
+	confState     raftpb.ConfState // raft 已提交的配置变更信息，在生成快照的时候使用
 	snapshotIndex uint64
 	appliedIndex  uint64
 
@@ -118,6 +118,7 @@ func (rc *raftNode) saveSnap(snap raftpb.Snapshot) error {
 	if err := rc.wal.SaveSnapshot(walSnap); err != nil {
 		return err
 	}
+	// 存到 .wal 文件后为啥还需要再存到 .snap 文件？
 	if err := rc.snapshotter.SaveSnap(snap); err != nil {
 		return err
 	}
@@ -144,6 +145,7 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 	for i := range ents {
 		switch ents[i].Type {
 		case raftpb.EntryNormal:
+			//向 commitC 发布以提交的 entry
 			if len(ents[i].Data) == 0 {
 				// ignore empty messages
 				break
@@ -156,6 +158,7 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 			}
 
 		case raftpb.EntryConfChange:
+			//处理配置变更消息，需要改变与变更的节点有关的通信配置
 			var cc raftpb.ConfChange
 			cc.Unmarshal(ents[i].Data)
 			rc.confState = *rc.node.ApplyConfChange(cc)
@@ -188,6 +191,7 @@ func (rc *raftNode) publishEntries(ents []raftpb.Entry) bool {
 	return true
 }
 
+// 从磁盘载入快照
 func (rc *raftNode) loadSnapshot() *raftpb.Snapshot {
 	snapshot, err := rc.snapshotter.Load()
 	if err != nil && err != snap.ErrNoSnapshot {
@@ -226,6 +230,7 @@ func (rc *raftNode) openWAL(snapshot *raftpb.Snapshot) *wal.WAL {
 // replayWAL replays WAL entries into the raft instance.
 func (rc *raftNode) replayWAL() *wal.WAL {
 	log.Printf("replaying WAL of member %d", rc.id)
+	//如果在 snapdir:  fmt.Sprintf("raftexample-%d-snap", id)目录下没有快照文件的话，返回 nil
 	snapshot := rc.loadSnapshot()
 	w := rc.openWAL(snapshot)
 	_, st, ents, err := w.ReadAll()
@@ -242,7 +247,7 @@ func (rc *raftNode) replayWAL() *wal.WAL {
 	rc.raftStorage.Append(ents)
 	// send nil once lastIndex is published so client knows commit channel is current
 	if len(ents) > 0 {
-		rc.lastIndex = ents[len(ents)-1].Index
+		rc.lastIndex = ents[len(ents)-1].Index //设置为恢复出来的最大 Index
 	} else {
 		rc.commitC <- nil
 	}
@@ -267,6 +272,7 @@ func (rc *raftNode) startRaft() {
 	rc.snapshotterReady <- rc.snapshotter
 
 	oldwal := wal.Exist(rc.waldir)
+	// 从磁盘读取WAL日志恢复 snapshot/entry/hardstate 到 rc.raftStorage
 	rc.wal = rc.replayWAL()
 
 	rpeers := make([]raft.Peer, len(rc.peers))
@@ -308,8 +314,9 @@ func (rc *raftNode) startRaft() {
 			rc.transport.AddPeer(types.ID(i+1), []string{rc.peers[i]})
 		}
 	}
-
+	// 启动 raft节点 http 接口
 	go rc.serveRaft()
+	// 处理 proposeC/confChangeC 信号。接收 Ready()消息
 	go rc.serveChannels()
 }
 
@@ -377,6 +384,8 @@ func (rc *raftNode) maybeTriggerSnapshot() {
 	rc.snapshotIndex = rc.appliedIndex
 }
 
+// 处理应用程序发出的 proposeC/confChangeC 信号。
+// 接收 raft 的 Ready()消息。存储到 WAL，并发布到 commitC
 func (rc *raftNode) serveChannels() {
 	snap, err := rc.raftStorage.Snapshot()
 	if err != nil {
@@ -392,6 +401,8 @@ func (rc *raftNode) serveChannels() {
 	defer ticker.Stop()
 
 	// send proposals over raft
+	// 客户端通过proposeC 发送提议 或者通过confChangeC 发送配置变更
+	// 客户端如果关闭 proposeC或者confChangeC 通道，则关闭 raft
 	go func() {
 		confChangeCount := uint64(0)
 
@@ -435,6 +446,7 @@ func (rc *raftNode) serveChannels() {
 			}
 			rc.raftStorage.Append(rd.Entries)
 			rc.transport.Send(rd.Messages)
+			//CommittedEntries先前已经被保存到 raftStorage 过，因此不用再次保存
 			if ok := rc.publishEntries(rc.entriesToApply(rd.CommittedEntries)); !ok {
 				rc.stop()
 				return

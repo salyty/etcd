@@ -29,10 +29,13 @@ type httpKVAPI struct {
 	confChangeC chan<- raftpb.ConfChange
 }
 
+//处理 http 请求。
 func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := r.RequestURI
 	switch {
 	case r.Method == "PUT":
+		//修改 kv
+		//请求例子：curl -L http://127.0.0.1:12380/my-key -XPUT -d foo
 		v, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			log.Printf("Failed to read on PUT (%v)\n", err)
@@ -46,12 +49,17 @@ func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// committed so a subsequent GET on the key may return old value
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == "GET":
+		//读取 kv
+		//请求例子：curl -L http://127.0.0.1:32380/my-key
 		if v, ok := h.store.Lookup(key); ok {
 			w.Write([]byte(v))
 		} else {
 			http.Error(w, "Failed to GET", http.StatusNotFound)
 		}
 	case r.Method == "POST":
+		//增加 raft 节点
+		//请求例子：curl -L http://127.0.0.1:12380/4 -XPOST -d http://127.0.0.1:42379
+		// url = http://127.0.0.1:42379
 		url, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			log.Printf("Failed to read on POST (%v)\n", err)
@@ -76,6 +84,8 @@ func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// As above, optimistic that raft will apply the conf change
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == "DELETE":
+		//移除 raft 节点
+		//请求例子：curl -L http://127.0.0.1:12380/3 -XDELETE
 		nodeId, err := strconv.ParseUint(key[1:], 0, 64)
 		if err != nil {
 			log.Printf("Failed to convert ID for conf change (%v)\n", err)

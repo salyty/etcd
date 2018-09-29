@@ -201,7 +201,9 @@ func (x *ConfChangeType) UnmarshalJSON(data []byte) error {
 func (ConfChangeType) EnumDescriptor() ([]byte, []int) { return fileDescriptorRaft, []int{2} }
 
 type Entry struct {
+	//选举相关
 	Term             uint64    `protobuf:"varint,2,opt,name=Term" json:"Term"`
+	//Log Entry 相关
 	Index            uint64    `protobuf:"varint,3,opt,name=Index" json:"Index"`
 	Type             EntryType `protobuf:"varint,1,opt,name=Type,enum=raftpb.EntryType" json:"Type"`
 	Data             []byte    `protobuf:"bytes,4,opt,name=Data" json:"Data,omitempty"`

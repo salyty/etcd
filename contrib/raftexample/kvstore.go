@@ -53,6 +53,7 @@ func (s *kvstore) Lookup(key string) (string, bool) {
 	return v, ok
 }
 
+// 仅仅向 raft 节点提议，并没有执行 commit 操作， kv 并未进入 kvStore
 func (s *kvstore) Propose(k string, v string) {
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).Encode(kv{k, v}); err != nil {
@@ -61,8 +62,12 @@ func (s *kvstore) Propose(k string, v string) {
 	s.proposeC <- buf.String()
 }
 
+// 启动后commit 重放，然后发个 nil 过来，
+// 有时候发快照过来，data 也是 nil
+// 从 commitC 获取提交信息，包括 kv 和 快照。
 func (s *kvstore) readCommits(commitC <-chan *string, errorC <-chan error) {
 	for data := range commitC {
+		// data == nil 是 publish 了一批 enntry 之后的结束（publishEntries），或者是 publishSnapshot
 		if data == nil {
 			// done replaying log; new data incoming
 			// OR signaled to load snapshot

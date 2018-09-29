@@ -54,6 +54,7 @@ type Storage interface {
 	// [FirstIndex()-1, LastIndex()]. The term of the entry before
 	// FirstIndex is retained for matching purposes even though the
 	// rest of that entry may not be available.
+	// i：index
 	Term(i uint64) (uint64, error)
 	// LastIndex returns the index of the last entry in the log.
 	LastIndex() (uint64, error)
@@ -87,6 +88,7 @@ type MemoryStorage struct {
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
 		// When starting from scratch populate the list with a dummy entry at term zero.
+		//第一个 是虚拟 Entry
 		ents: make([]pb.Entry, 1),
 	}
 }
@@ -105,6 +107,9 @@ func (ms *MemoryStorage) SetHardState(st pb.HardState) error {
 }
 
 // Entries implements the Storage interface.
+// returns a slice of log entries in the range [lo,hi).
+// lo,hi：index。
+// 不包含虚拟节点
 func (ms *MemoryStorage) Entries(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 	ms.Lock()
 	defer ms.Unlock()
@@ -125,6 +130,9 @@ func (ms *MemoryStorage) Entries(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 }
 
 // Term implements the Storage interface.
+// The term of the entry before
+// FirstIndex is retained for matching purposes even though the
+// rest of that entry may not be available.
 func (ms *MemoryStorage) Term(i uint64) (uint64, error) {
 	ms.Lock()
 	defer ms.Unlock()
@@ -156,6 +164,8 @@ func (ms *MemoryStorage) FirstIndex() (uint64, error) {
 	return ms.firstIndex(), nil
 }
 
+// ms.ents[0]是虚拟Entry。ms.ents[1]才是第一个 Entry
+// 如果Storage只包含虚拟节点，则第一个log entry 不可用
 func (ms *MemoryStorage) firstIndex() uint64 {
 	return ms.ents[0].Index + 1
 }
@@ -181,6 +191,8 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	}
 
 	ms.snapshot = snap
+	// 虚拟只有 Term和Index 有意义，它记录了当前快照的 Term和Index
+	// 虚拟Entry后的第一个Entry开始就是在该快照后的增量信息了
 	ms.ents = []pb.Entry{{Term: snap.Metadata.Term, Index: snap.Metadata.Index}}
 	return nil
 }
@@ -236,6 +248,7 @@ func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 // Append the new entries to storage.
 // TODO (xiangli): ensure the entries are continuous and
 // entries[0].Index > ms.entries[0].Index
+// entries都是有效的，非虚拟
 func (ms *MemoryStorage) Append(entries []pb.Entry) error {
 	if len(entries) == 0 {
 		return nil
@@ -264,6 +277,7 @@ func (ms *MemoryStorage) Append(entries []pb.Entry) error {
 	case uint64(len(ms.ents)) == offset:
 		ms.ents = append(ms.ents, entries...)
 	default:
+		// 中间缺了一些 entry，如果 append 进来的话会导致ms.ents不连续
 		raftLogger.Panicf("missing log entry [last: %d, append at: %d]",
 			ms.lastIndex(), entries[0].Index)
 	}
